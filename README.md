@@ -1,80 +1,36 @@
-# fastapi-clean-architecture
+# Инфраструктура и CI/CD для сервиса FastAPI Clean Architecture
 
-## description
-Base FastAPI project for applying general RestAPI Application cases.
-![openapi-docs](./doc/images/openapi-docs-v2.png)
+Репозиторий содержит решение по контейнеризации и автоматизации доставки FastAPI-сервиса в кластер Kubernetes с помощью GitLab CI и Helm.
 
-## concept
-1. Minimal functionality.
-2. Convincing architecture.
-3. Easy to read.
-4. Compatibility.
-5. Versatility.
+## 1. Как пользоваться пайплайном (Инструкция для разработчика)
+1. **Разработка фичи:** Создайте новую ветку от `main` (`git checkout -b feature/my-feature`), внесите изменения и отправьте в GitLab.
+2. **Открытие Merge Request (MR):** При создании MR в ветку `main` автоматически запускаются стадии `verify` (проверка синтаксиса/линтеры/тесты) и `build` (проверка, что Docker-образ корректно собирается). Если сборка падает — влить MR нельзя.
+3. **Деплой в Development:** После ревью и нажатия кнопки **Merge**, обновление ветки `main` автоматически запускает джобу `deploy_dev`, которая накатывает новую версию в Kubernetes-неймспейс `fastapi-dev` через Helm и автоматически прогоняет миграции Alembic.
+4. **Продвижение в Staging и Production:** В пайплайне ветки `main` доступны ручные (`manual`) джобы `deploy_staging` и `deploy_production`, позволяющие в один клик выкатить проверенный релиз в соответствующие неймспейсы (`fastapi-staging`, `fastapi-prod`).
 
-## base models
-1. user
-2. post [user (1 : n) post]
-3. tag [post (n : n) tag]
+## 2. Принятые архитектурные решения и почему
+* **Выбор локального стенда (Minikube + GitLab Runner):** Выбрана связка облачного GitLab.com и локального кластера Minikube с локальным GitLab Runner. Это позволяет протестировать полноценный цикл CI/CD без затрат на облачного провайдера. *Ограничение решения:* кластер физически находится на локальной машине и недоступен из публичного интернета, а `PersistentVolume` привязан к одной ноде Minikube. Из-за ограничений облачного GitLab.com для аккаунтов из РФ, CI-контур был развёрнут полностью локально на базе self-hosted gitlab/gitlab-ce + gitlab-runner + Minikube. Все скриншоты работы пайплайна приложены ниже, а сам репозиторий продублирован на GitHub для публичного доступа к коду.
 
-## integrated with
-1. Python3.9+
-2. Fastapi 0.78.0
-3. Database
-   1. MySQL5.7+
-   2. Migration with alembic
-   3. pytest with real DB
-   4. Load with two ways (eager, lazy)
-   5. Modeling with schema (1:1, 1:n, n:n)
-4. dependency-injector
-   1. service-repository pattern
-5. JWT authentication
-   1. role separation each endpoint
-6. Deployment
-   1. container environment(k8s, docker)
-   2. raw WAS(Web Application Server)
+* **Упаковка в Helm-чарт вместо сырых YAML-манифестов:** В ТЗ указано требование готовности к появлению окружений `staging` и `production`. Использование единого Helm-чарта с раздельными файлами значений (`values-dev.yaml`, `values-staging.yaml`, `values-prod.yaml`) и шаблона `.deploy_template` в GitLab CI избавляет от дублирования кода (принцип DRY).
+* **Multi-stage Dockerfile и непривилегированный пользователь:** Сборка разделена на два этапа (`builder` с компиляторами и финальный `python:3.10-slim`), что уменьшает размер образа и поверхность атаки. Контейнер запускается от пользователя `appuser`, а не `root`.
+* **Учет специфики `app/core/config.py`:** В коде приложения имя базы данных жестко привязано к переменной `ENV` через `ENV_DATABASE_MAPPER` (`dev` -> `dev-fca`, `stage` -> `stage-fca`, `prod` -> `fca`). Эти значения синхронизированы в `values-*.yaml` между переменными приложения и `POSTGRES_DB`.
+* **Доступ снаружи кластера:** Настроены как `Service` типа `NodePort`, так и контроллер `Ingress` (Nginx), чтобы обеспечить маршрутизацию трафика по доменным именам окружений.
 
-## commands
-1. db(alembic)
-   1. `alembic upgrade head`: apply every migrations
-   2. `alembic downgrade base`: rollback every migrations
-   3. `alembic revision --autogenerate -m "revision_name"`: create new migration 
-   4. `alembic history`: get alembic revision history
-2. How to migration
-   1. Create or modify models from `app/model/*.py`
-   2. `alembic -x ENV=[dev|stage|prod] revision --autogenerate -m "revision_name"`
-   3. Check auto generated migration file from `app/migrations/versions/*.py`
-   4. `alembic -x ENV=[dev|stage|prod] upgrade head`  
-      If ENV does not exist, it will be applied to the test.
-3. server
-   1. `uvicorn app.main:app --reload`: base
-   2. options
-      1. host: `--host 0.0.0.0`
-      2. port: `--port 8000`
-4. test
-   1. `pytest`: base 
-   2. `pytest --cov=app --cov-report=term-missing`: coverage with stdout
-   3. `pytest --cov=app --cov-report=html`: coverage with html
+## 3. Что бы я сделал иначе, если бы было больше времени и ресурсов (Production-ready)
+1. **Вынос миграций БД из `entrypoint.sh` в отдельный Kubernetes Job / Helm Hook (`pre-upgrade`):** Сейчас миграции запускаются при старте контейнера. На `dev` с 1 репликой это работает отлично, но на `prod` при запуске 3+ реплик возникнет состояние гонки (race condition) при одновременном запуске `alembic upgrade head`.
+2. **Управляемая БД (Managed PostgreSQL) или оператор (CloudNativePG):** В реальном продакшене база данных выносится за пределы прикладного чарта (в управляемый сервис облака или отдельный отказоустойчивый кластер с репликацией и регулярными бэкапами в S3/MinIO).
+3. **Управление секретами:** Заменил бы стандартные Kubernetes Secrets со значениями из `values.yaml` на **HashiCorp Vault**, **External Secrets Operator** или **Mozilla SOPS**, чтобы секреты никогда не хранились в открытом виде.
+4. **Безопасная сборка образов (Kaniko / BuildKit):** Вместо сборки через локальный Docker-сокет использовал бы сборку в изолированных подах Kubernetes через `kaniko` с пушем в приватный GitLab Container Registry.
+5. **Наблюдаемость (Observability):** Добавил бы экспорт метрик (`/metrics` для **Prometheus + Grafana**), сбор логов (**Loki / ELK**) и проверку уязвимостей образа через **Trivy** в пайплайне.
 
-## sample env
-```dotenv
-# mysql case
-ENV=dev
-DB=mysql
-DB_USER=root
-DB_PASSWORD=qwer1234
-DB_HOST=localhost
-DB_PORT=3306
+## 4. Вопросы, которые я бы задал команде перед внедрением в реальный проект
+1. **Стратегия работы с БД и миграциями:** Допустимы ли даунтаймы при накатывании тяжелых миграций Alembic и требуется ли автоматический откат схемы при сбое деплоя?
+2. **Нагрузка и масштабирование (SLA/SLO):** Какой ожидается RPS у сервиса, нужны ли настройки автоскейлинга (`HPA` по CPU/RAM) и какие лимиты (`requests/limits`) выставить для подов?
+3. **Политика хранения данных и бэкапов (RPO/RTO):** Как часто нужно делать бэкапы PostgreSQL и за какое время база должна восстанавливаться при аварии?
+4. **Сетевая безопасность и SSL:** Кто отвечает за выпуск TLS-сертификатов (используем ли `cert-manager` с Let's Encrypt на уровне Ingress) и нужен ли доступ к базе данных извне для аналитиков/разработчиков?
+5. **Тестирование в CI:** Есть ли у команды готовый набор unit/integration-тестов (`pytest`), которые требуют поднятия временной тестовой БД (`test-fca`) прямо внутри CI-пайплайна на этапе Merge Request?
 
-# postgres case
-ENV=dev
-DB=postgresql
-DB_USER=gyu
-DB_PASSWORD=
-DB_HOST=localhost
-DB_PORT=5432
-```
-
-## references
-1. [FastAPI official docs](https://fastapi.tiangolo.com/)
-2. [alembic official tutorial](https://alembic.sqlalchemy.org/en/latest/tutorial.html)
-3. [Dependency Injector](https://python-dependency-injector.ets-labs.org/)
+## 5. Демонстрация работы
+* **Работа пайплайна GitLab CI:** ![Pipeline](screenshots/1_pipeline.png)
+* **Ответ сервиса снаружи кластера (Swagger UI):** ![Swagger](screenshots/2_api_response.png)
+* **Сохранение данных в PostgreSQL:** ![Database](screenshots/3_postgres_data.png)

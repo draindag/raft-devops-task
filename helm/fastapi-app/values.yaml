@@ -1,0 +1,21 @@
+app:
+  env: "dev"
+  replicas: 1
+  secretKey: "dev-super-secret-key"
+
+image:
+  repository: "fastapi-clean-arch"
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+db:
+  user: "postgres"
+  password: "postgrespassword"
+  name: "dev-fca"
+  storage: "1Gi"
+
+service:
+  nodePort: 30080
+
+ingress:
+  host: "dev.fastapi.local"

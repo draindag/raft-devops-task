@@ -1,0 +1,80 @@
+stages:
+  - verify
+  - build
+  - deploy
+
+variables:
+  IMAGE_NAME: "fastapi-clean-arch"
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+
+# Проверки при открытии Merge Request и пуше в main
+lint_and_verify:
+  stage: verify
+  image: python:3.10-slim
+  script:
+    - python -m py_compile app/main.py app/core/config.py
+    - echo "Syntax and configuration checks passed!"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# Сборка Docker-образа
+build_image:
+  stage: build
+  script:
+    - docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest .
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# Базовый переиспользуемый шаблон для деплоя в любое окружение (dev / staging / prod)
+.deploy_template:
+  stage: deploy
+  script:
+    - kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+    - helm upgrade --install fastapi-${ENV_NAME} ./helm/fastapi-app
+      --namespace ${K8S_NAMESPACE}
+      -f ./helm/fastapi-app/values-${ENV_NAME}.yaml
+      --set image.repository=${IMAGE_NAME}
+      --set image.tag=${IMAGE_TAG}
+    - kubectl rollout status deployment/fastapi-${ENV_NAME}-app -n ${K8S_NAMESPACE} --timeout=120s
+
+# Автоматический деплой в Development при обновлении main
+deploy_dev:
+  extends: .deploy_template
+  variables:
+    ENV_NAME: "dev"
+    K8S_NAMESPACE: "fastapi-dev"
+  environment:
+    name: development
+    url: http://dev.fastapi.local
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# Задел под Staging (по кнопке manual)
+deploy_staging:
+  extends: .deploy_template
+  variables:
+    ENV_NAME: "staging"
+    K8S_NAMESPACE: "fastapi-staging"
+  environment:
+    name: staging
+    url: http://staging.fastapi.local
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+      allow_failure: true
+
+# Задел под Production (по кнопке manual)
+deploy_production:
+  extends: .deploy_template
+  variables:
+    ENV_NAME: "prod"
+    K8S_NAMESPACE: "fastapi-prod"
+  environment:
+    name: production
+    url: http://fastapi.local
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+      allow_failure: true

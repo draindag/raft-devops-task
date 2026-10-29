@@ -1,0 +1,21 @@
+app:
+  env: "stage"
+  replicas: 1
+  secretKey: "dev-super-secret-key"
+
+image:
+  repository: "fastapi-clean-arch"
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+db:
+  user: "postgres"
+  password: "postgrespassword"
+  name: "stage-fca"
+  storage: "1Gi"
+
+service:
+  nodePort: 30081
+
+ingress:
+  host: "staging.fastapi.local"
