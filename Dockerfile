@@ -11,11 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir "poetry==$POETRY_VERSION"
-
-COPY pyproject.toml poetry.lock* ./
-RUN poetry config virtualenvs.create false \
-    && poetry install --no-interaction --no-ansi --no-root --only main
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 FROM python:3.10-slim
 
